@@ -18,6 +18,7 @@ import yt_dlp
 
 AUDIO_FORMAT = "flac"
 SEEK_DISTANCE_SECONDS = 5
+VOLUME_INCREMENT = 10
 PROGRESS_BAR_WIDTH = 60
 
 
@@ -84,6 +85,7 @@ def main(
         stdscr.refresh()
 
         # generate the playback file by adjusting the tempo
+        # NOTE: SoX supports WAV, MP3, Ogg, and FLAC
         playback_file = Path(work_dir, f"playback.{AUDIO_FORMAT}")
         transformer = sox.Transformer()
         if start != 0.0 or end is not None:
@@ -97,6 +99,7 @@ def main(
         audio_length = sox.file_info.duration(playback_file)
 
         # load the playback file
+        # NOTE: pygame only supports MP3 and FLAC with functional seeking
         pygame.mixer.init()
         pgm.load(playback_file)
 
@@ -159,6 +162,18 @@ def main(
                         if not paused:
                             pgm.play(start=start_offset)
 
+                    # volume up
+                    elif key == curses.KEY_UP:
+                        pgm.set_volume(
+                            min(pgm.get_volume() + VOLUME_INCREMENT / 100, 1)
+                        )
+
+                    # volume down
+                    elif key == curses.KEY_DOWN:
+                        pgm.set_volume(
+                            max(0, pgm.get_volume() - VOLUME_INCREMENT / 100)
+                        )
+
                 # loop
                 if loop and not paused and not pgm.get_busy():
                     time_since_play = start_offset = 0
@@ -181,7 +196,7 @@ def main(
 
                 # draw info
                 if center_y > 0:
-                    formatted_tempo = f"{tempo:.2f}x tempo"
+                    formatted_tempo = f"tempo: {tempo:.2f}x"
 
                     minutes, seconds = divmod(int(tempo * t), 60)
                     hours, minutes = divmod(minutes, 60)
@@ -191,7 +206,17 @@ def main(
                         else f"{minutes}:{seconds:02d}"
                     )
 
-                    info_string = f"{formatted_tempo} - {formatted_time}"
+                    # pygame's set_volume isn't very accurate. therefore round the displayed value
+                    # to the nearest increment, even though it might be +/- 1
+                    volume_100 = (
+                        round(pgm.get_volume() * 100 / VOLUME_INCREMENT)
+                        * VOLUME_INCREMENT
+                    )
+                    formatted_volume = f"volume: {volume_100:3}%"
+
+                    info_string = (
+                        f"{formatted_tempo} - {formatted_volume} - {formatted_time}"
+                    )
                     if len(info_string) < max_width:
                         strings_to_draw.append(
                             (
@@ -204,7 +229,8 @@ def main(
                 # draw help
                 if center_y < height - 2:
                     help_string = (
-                        "space: pause, r: restart, left/right: seek, q/esc: quit"
+                        "space: pause, r: restart, left/right: seek, up/down: volume, "
+                        "q/esc: quit"
                     )
                     if len(help_string) < max_width:
                         strings_to_draw.append(
