@@ -22,7 +22,7 @@ PROGRESS_BAR_WIDTH = 60
 def main(
     stdscr: curses.window,
     file_or_url: str,
-    speed: float = 1.0,
+    tempo: float = 1.0,
     start: float = 0.0,
     end: Optional[float] = None,
     loop: bool = False,
@@ -86,8 +86,8 @@ def main(
         transformer = sox.Transformer()
         if start != 0.0 or end is not None:
             transformer.trim(start, end)
-        if speed != 1.0:
-            transformer.tempo(speed, audio_type="m")
+        if tempo != 1.0:
+            transformer.tempo(tempo, audio_type="m")
         if len(transformer.effects) > 0:
             transformer.build(source_file, playback_file)
         else:
@@ -179,9 +179,9 @@ def main(
 
                 # draw info
                 if center_y > 0:
-                    formatted_speed = f"{speed:.2f}x speed"
+                    formatted_tempo = f"{tempo:.2f}x tempo"
 
-                    minutes, seconds = divmod(int(speed * t), 60)
+                    minutes, seconds = divmod(int(tempo * t), 60)
                     hours, minutes = divmod(minutes, 60)
                     formatted_time = (
                         f"{hours}:{minutes:02d}:{seconds:02d}"
@@ -189,7 +189,7 @@ def main(
                         else f"{minutes}:{seconds:02d}"
                     )
 
-                    info_string = f"{formatted_speed} - {formatted_time}"
+                    info_string = f"{formatted_tempo} - {formatted_time}"
                     if len(info_string) < max_width:
                         strings_to_draw.append(
                             (
@@ -228,15 +228,15 @@ logging.disable(logging.WARNING)
 
 parser = argparse.ArgumentParser(
     usage=f"python {Path(__file__).name} <file_or_youtube_url> <options>",
-    description="Play an audio file or audio from YouTube URL with a given speed multiplier.",
+    description="Play an audio file or audio from YouTube URL with a given tempo multiplier.",
 )
 parser.add_argument("file_or_url", help="Path to audio file or YouTube URL")
-parser.add_argument("--speed", type=float, default=1.0, help="Speed multiplier")
+parser.add_argument("-t", "--tempo", type=float, default=1.0, help="tempo multiplier")
 parser.add_argument(
-    "--start", type=float, default=0, help="Track start time in seconds"
+    "-s", "--start", type=float, default=0, help="Track start time in seconds"
 )
-parser.add_argument("--end", type=float, help="Track end time in seconds")
-parser.add_argument("--loop", action="store_true", help="Loop the track")
+parser.add_argument("-e", "--end", type=float, help="Track end time in seconds")
+parser.add_argument("-l", "--loop", action="store_true", help="Loop the track")
 parser.add_argument(
     "--save",
     help="Save the downloaded audio file to the given path. Do not include an extension.",
