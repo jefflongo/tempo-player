@@ -4,11 +4,21 @@ A simple command-line audio player designed to help with instrument practice. It
 
 ## Installation
 
-Install requirements:
-
 ```bash
+# Install Python requirements
 pip install -r requirements.txt
 ```
+
+Linux:
+```bash
+sudo apt install -y ffmpeg sox libsox-fmt-all
+```
+
+Windows:
+```
+winget install ffmpeg sox
+```
+- Add `C:\Program Files (x86)\sox-x-y-z` to `PATH` (replace `x-y-z` with version)
 
 ## Usage
 

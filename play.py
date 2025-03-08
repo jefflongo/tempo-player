@@ -1,10 +1,13 @@
 import argparse
 import curses
 import logging
+import os
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional
+
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 
 import pygame
 import pygame.mixer_music as pgm
@@ -210,6 +213,8 @@ def main(
             except KeyboardInterrupt:
                 # quit
                 break
+
+        pgm.unload()
 
 
 # suppress third party library logging
