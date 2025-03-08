@@ -107,8 +107,6 @@ def main(
 
         while True:
             try:
-                stdscr.clear()
-
                 if pgm.get_busy():
                     time_since_play = pgm.get_pos() / 1000
 
@@ -168,13 +166,16 @@ def main(
                 height, width = stdscr.getmaxyx()
                 center_y = height // 2
                 max_width = width - 2
+                strings_to_draw = []
 
                 # draw progress bar
                 progress = min(t / audio_length, 1)
                 max_bars = min(max_width - 2, PROGRESS_BAR_WIDTH)
                 n_bars = round(progress * max_bars)
                 progress_bar = "[" + "=" * n_bars + " " * (max_bars - n_bars) + "]"
-                stdscr.addstr(center_y, (width - len(progress_bar)) // 2, progress_bar)
+                strings_to_draw.append(
+                    (center_y, (width - len(progress_bar)) // 2, progress_bar)
+                )
 
                 # draw info
                 if center_y > 0:
@@ -190,10 +191,12 @@ def main(
 
                     info_string = f"{formatted_speed} - {formatted_time}"
                     if len(info_string) < max_width:
-                        stdscr.addstr(
-                            center_y - 1,
-                            (width - len(info_string)) // 2,
-                            info_string,
+                        strings_to_draw.append(
+                            (
+                                center_y - 1,
+                                (width - len(info_string)) // 2,
+                                info_string,
+                            )
                         )
 
                 # draw help
@@ -202,10 +205,13 @@ def main(
                         "space: pause, r: restart, left/right: seek, q/esc: quit"
                     )
                     if len(help_string) < max_width:
-                        stdscr.addstr(
-                            center_y + 2, (width - len(help_string)) // 2, help_string
+                        strings_to_draw.append(
+                            (center_y + 2, (width - len(help_string)) // 2, help_string)
                         )
 
+                stdscr.clear()
+                for string in strings_to_draw:
+                    stdscr.addstr(*string)
                 stdscr.refresh()
 
                 curses.napms(10)
