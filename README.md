@@ -1,27 +1,31 @@
 # Tempo Player
 
-A simple command-line audio player designed to help with instrument practice. It allows playback from audio files or YouTube links, and supports tempo adjustment, start/end cropping, and looping. Currently, only MP3 and FLAC formats are supported.
+A simple command-line audio player designed to help with instrument practice. It allows playback from audio files or YouTube links, and supports tempo adjustment, start/end cropping, and looping.
 
-## Installation
+## Dependencies
 
+Windows:
+- Download [Rubber Band Library](https://breakfastquay.com/rubberband/)
+- Extract and add the directory to the system PATH
+
+Mac:
 ```bash
-# Install Python requirements
-pip install -r requirements.txt
+brew install rubberband
 ```
 
 Linux:
 ```bash
-sudo apt install -y ffmpeg sox libsox-fmt-all
+sudo apt install rubberband-cli
 ```
 
-Windows:
+## Install
+
+```bash
+cargo install --path .
 ```
-winget install ffmpeg sox
-```
-- Add `C:\Program Files (x86)\sox-x-y-z` to `PATH` (replace `x-y-z` with version)
 
 ## Usage
 
 ```bash
-python play.py <file_or_youtube_url> <options>
+tempo-player <file_or_youtube_url> <options>
 ```
