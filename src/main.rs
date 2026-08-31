@@ -1,17 +1,18 @@
 mod audio;
 mod cli_player;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail, ensure};
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use rodio::{DeviceSinkBuilder, Player, Source};
 use tokio::sync::Notify;
 use url::Url;
 use which::which;
 use yt_dlp::client::LibraryInstaller;
 use yt_dlp::client::deps::Libraries;
+use yt_dlp::model::Video;
 use yt_dlp::{Downloader, VideoSelection};
 
 use crate::audio::{NeverStop, TrackMetadata, convert_to_wav, get_audio_with_tempo};
@@ -20,9 +21,19 @@ use crate::cli_player::cli_player;
 /// Play music at a desired tempo locally or from URL.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
+#[command(group(
+    ArgGroup::new("source")
+        .required(true)
+        .multiple(false)
+        .args(["file_or_url", "search"])
+))]
 struct Cli {
     /// Path to file or URL of audio
-    file_or_url: String,
+    file_or_url: Option<String>,
+
+    /// Search YouTube and play the first result
+    #[arg(long)]
+    search: Option<String>,
 
     /// Tempo multiplier
     #[arg(short, long, default_value_t = 1.0)]
@@ -78,6 +89,54 @@ fn parse_time(s: &str) -> Result<f32> {
     }
 }
 
+enum VideoQuery<'a> {
+    Url(&'a Url),
+    Search(&'a str),
+}
+
+async fn download_audio(
+    installer: &LibraryInstaller,
+    ffmpeg: &Path,
+    out_dir: &Path,
+    query: VideoQuery<'_>,
+) -> Result<PathBuf> {
+    println!("Downloading from YouTube..");
+
+    let yt_dlp = match which("yt-dlp") {
+        Ok(path) => path,
+        _ => installer.install_youtube(None).await?,
+    };
+    let executables = Libraries::new(yt_dlp, ffmpeg.to_path_buf());
+    let downloader = Downloader::builder(executables, out_dir).build().await?;
+
+    async fn fetch(
+        downloader: &Downloader,
+        query: &VideoQuery<'_>,
+    ) -> Result<Video, yt_dlp::error::Error> {
+        match query {
+            VideoQuery::Url(url) => downloader.fetch_video_infos(url).await,
+            VideoQuery::Search(search) => downloader.youtube_extractor().search_first(search).await,
+        }
+    }
+
+    let video = match fetch(&downloader, &query).await {
+        Ok(v) => v,
+        Err(_) => {
+            println!("Failed to download video, updating yt-dlp and trying again..");
+            let _ = downloader.update_downloader().await;
+            fetch(&downloader, &query).await?
+        }
+    };
+
+    let file_name = format!(
+        "{}.{}",
+        video.title,
+        video.best_audio_format().unwrap().codec_info.audio_ext
+    );
+    let file_path = downloader.download_audio_stream(&video, &file_name).await?;
+    Ok(file_path)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -94,29 +153,23 @@ async fn main() -> Result<()> {
         _ => installer.install_ffmpeg(None).await?,
     };
 
-    let source = match Url::parse(&cli.file_or_url) {
-        Ok(url) if !url.scheme().is_empty() => {
-            print!("Downloading ");
-            let yt_dlp = match which("yt-dlp") {
-                Ok(path) => path,
-                _ => installer.install_youtube(None).await?,
-            };
-            let executables = Libraries::new(yt_dlp, ffmpeg.clone());
-            let downloader = Downloader::builder(executables, temp_dir.path())
-                .build()
-                .await?;
-
-            let video = downloader.fetch_video_infos(url).await?;
-            println!("{}..", video.title);
-
-            let file_name = format!(
-                "{}.{}",
-                video.title,
-                video.best_audio_format().unwrap().codec_info.audio_ext
-            );
-            downloader.download_audio_stream(&video, &file_name).await?
+    let source = match (&cli.file_or_url, &cli.search) {
+        (Some(file_or_url), None) => match Url::parse(file_or_url) {
+            Ok(url) => {
+                download_audio(&installer, &ffmpeg, temp_dir.path(), VideoQuery::Url(&url)).await?
+            }
+            _ => PathBuf::from(file_or_url),
+        },
+        (None, Some(search)) => {
+            download_audio(
+                &installer,
+                &ffmpeg,
+                temp_dir.path(),
+                VideoQuery::Search(search),
+            )
+            .await?
         }
-        _ => PathBuf::from(cli.file_or_url),
+        _ => unreachable!(),
     };
 
     println!("Processing..");
