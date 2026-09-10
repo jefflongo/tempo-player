@@ -1,12 +1,13 @@
 mod audio;
 mod cli_player;
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
-use rodio::{DeviceSinkBuilder, Player, Source};
+use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use tokio::sync::Notify;
 use url::Url;
 use which::which;
@@ -15,10 +16,10 @@ use yt_dlp::client::deps::Libraries;
 use yt_dlp::model::Video;
 use yt_dlp::{Downloader, VideoSelection};
 
-use crate::audio::{NeverStop, TrackMetadata, convert_to_wav, get_audio_with_tempo};
+use crate::audio::{NeverStop, TempoControlled, TrackMetadata, convert_to_wav};
 use crate::cli_player::cli_player;
 
-/// Play music at a desired tempo locally or from URL.
+/// Play music at a desired tempo locally or from YouTube.
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -31,11 +32,11 @@ struct Cli {
 
     /// Start time of track
     #[arg(short, long, value_parser = parse_time)]
-    start: Option<f32>,
+    start: Option<f64>,
 
     /// End time of track
     #[arg(short, long, value_parser = parse_time)]
-    end: Option<f32>,
+    end: Option<f64>,
 
     /// Loop the track
     #[arg(short, long = "loop")]
@@ -50,22 +51,22 @@ struct Cli {
 }
 
 /// Convert a timestamp in the format HH:MM:SS.XXX or MM:SS.XXX to fractional seconds.
-fn parse_time(s: &str) -> Result<f32> {
-    fn seconds(s: &str) -> Result<f32> {
-        let seconds = s.parse::<f32>().context("Invalid seconds value")?;
+fn parse_time(s: &str) -> Result<f64> {
+    fn seconds(s: &str) -> Result<f64> {
+        let seconds = s.parse::<f64>().context("Invalid seconds value")?;
         ensure!(seconds >= 0.0, "Seconds must be positive");
         Ok(seconds)
     }
 
-    fn minutes(s: &str) -> Result<f32> {
+    fn minutes(s: &str) -> Result<f64> {
         let minutes = s.parse::<u8>().context("Invalid minutes value")?;
         ensure!(minutes < 60, "Minutes must be less than 60");
-        Ok(minutes as f32)
+        Ok(minutes.into())
     }
 
-    fn hours(s: &str) -> Result<f32> {
-        let minutes = s.parse::<usize>().context("Invalid hours value")?;
-        Ok(minutes as f32)
+    fn hours(s: &str) -> Result<f64> {
+        let minutes = s.parse::<u32>().context("Invalid hours value")?;
+        Ok(minutes.into())
     }
 
     let s = s.trim();
@@ -121,7 +122,11 @@ async fn download_audio(
     let file_name = format!(
         "{}.{}",
         video.title,
-        video.best_audio_format().unwrap().codec_info.audio_ext
+        video
+            .best_audio_format()
+            .context("Video has no audio format")?
+            .codec_info
+            .audio_ext
     );
     let file_path = downloader.download_audio_stream(&video, &file_name).await?;
     Ok(file_path)
@@ -132,7 +137,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let executables_dir = dirs::cache_dir()
-        .expect("Couldn't determine native cache directory")
+        .context("Couldn't determine native cache directory")?
         .join(env!("CARGO_PKG_NAME"));
     let temp_dir = tempfile::tempdir()?;
 
@@ -154,30 +159,39 @@ async fn main() -> Result<()> {
     };
 
     println!("Processing..");
-    let out_dir = cli.save.as_deref().unwrap_or(temp_dir.as_ref());
+    let out_dir = cli.save.as_deref().unwrap_or(temp_dir.path());
     let wav = convert_to_wav(&ffmpeg, &source, out_dir, cli.start, cli.end)?;
-    let audio = get_audio_with_tempo(&wav, cli.tempo, &temp_dir.path())?;
+    let wav = File::open(wav)?;
+    let wav_len = wav.metadata()?.len();
+    let audio = Decoder::builder()
+        .with_data(wav)
+        .with_byte_len(wav_len)
+        .build()?;
     let audio_length = audio
         .total_duration()
-        .expect("Couldn't retrieve track length");
+        .context("Couldn't retrieve track length")?;
+
+    let (audio, tempo_control) = TempoControlled::new(audio, cli.tempo);
+
+    let track_ended = Arc::new(Notify::new());
+    let track_ended_listener = track_ended.clone();
+    let audio = NeverStop::new(audio, move || track_ended.notify_one());
+
+    let metadata = TrackMetadata {
+        length: audio_length,
+        title: source
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        track_ended: track_ended_listener,
+        tempo_control,
+        loop_track: cli.loop_track,
+    };
 
     let mut sink = DeviceSinkBuilder::open_default_sink()?;
     sink.log_on_drop(false);
     let player = Player::connect_new(&sink.mixer());
 
-    let track_ended = Arc::new(Notify::new());
-    let track_ended_listener = track_ended.clone();
-    let metadata = TrackMetadata {
-        length: audio_length,
-        title: source
-            .file_stem()
-            .map(|os| os.to_string_lossy().into_owned())
-            .unwrap_or(String::new()),
-        track_ended: track_ended_listener,
-        loop_track: cli.loop_track,
-    };
-
-    player.append(NeverStop::new(audio, move || track_ended.notify_one()));
-
+    player.append(audio);
     cli_player(player, metadata).await
 }

@@ -1,24 +1,226 @@
-use std::fs::File;
+use std::collections::VecDeque;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use rodio::source::SeekError;
 use rodio::{ChannelCount, SampleRate};
-use rodio::{Decoder, Sample, Source};
+use rodio::{Sample, Source};
+use rubberband::Stretcher;
 use tokio::sync::Notify;
 
 pub struct TrackMetadata {
     pub length: Duration,
     pub title: String,
     pub track_ended: Arc<Notify>,
+    pub tempo_control: Arc<TempoControl>,
     pub loop_track: bool,
 }
 
-/// rodio `Source` that plays zeroed samples after the inner source ends such that it never gets
-/// removed from the player queue.
+impl TrackMetadata {
+    #[inline]
+    pub fn length_with_tempo(&self) -> Duration {
+        self.tempo_control.duration_at_tempo(self.length)
+    }
+}
+
+/// A handle for controlling the tempo of a [`TempoControlled`].
+pub struct TempoControl {
+    tempo_bits: AtomicU64,
+}
+
+impl TempoControl {
+    /// Set the tempo of the [`TempoControlled`]. A tempo of 2.0 means the source will play at
+    /// double the original speed. A tempo of 0.5 means the source will play at half the original
+    /// speed.
+    #[inline]
+    pub fn set_tempo(&self, tempo: f64) {
+        debug_assert!(tempo > 0.0, "tempo must be positive");
+        self.tempo_bits.store(tempo.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Get the current tempo of the [`TempoControlled`]. A tempo of 2.0 means the source will play
+    /// at double the original speed. A tempo of 0.5 means the source will play at half the original
+    /// speed.
+    #[inline]
+    pub fn tempo(&self) -> f64 {
+        f64::from_bits(self.tempo_bits.load(Ordering::Relaxed))
+    }
+
+    /// Given a [`Duration`] at tempo, compute the position at real-time.
+    #[inline]
+    pub fn duration_from_tempo(&self, pos: Duration) -> Duration {
+        pos.mul_f64(self.tempo())
+    }
+
+    /// Given a [`Duration`] at real-time, compute the position at tempo.
+    #[inline]
+    pub fn duration_at_tempo(&self, pos: Duration) -> Duration {
+        pos.div_f64(self.tempo())
+    }
+
+    /// Constructs a new [`TempoControl`] with initial tempo `tempo`.
+    fn new(tempo: f64) -> Self {
+        Self {
+            tempo_bits: AtomicU64::new(tempo.to_bits()),
+        }
+    }
+}
+
+/// A [`Source`] which can have its tempo dynamically controlled.
+pub struct TempoControlled<S: Source> {
+    inner: S,
+    stretcher: Stretcher,
+    tempo_control: Arc<TempoControl>,
+    out_queue: VecDeque<Sample>,
+    source_drained: bool,
+    stretcher_drained: bool,
+}
+
+impl<S: Source> TempoControlled<S> {
+    /// Constructs a new [`TempoControlled<S>`] with underlying [`Source`] `inner` and initial tempo
+    /// `initial_tempo`. Returns both the new [`TempoControlled<S>`] and an [`Arc<TempoControl>`]
+    /// for controlling the tempo after the source is consumed by a sink.
+    pub fn new(inner: S, initial_tempo: f64) -> (Self, Arc<TempoControl>) {
+        use rubberband::Options;
+
+        let tempo_control = Arc::new(TempoControl::new(initial_tempo));
+        let user_tempo_control = Arc::clone(&tempo_control);
+
+        let stretcher = Stretcher::new(
+            inner.sample_rate().get(),
+            inner.channels().get().into(),
+            Options::PROCESS_REALTIME | Options::ENGINE_FINER,
+            1.0 / tempo_control.tempo(),
+            1.0,
+        );
+
+        let source = Self {
+            inner,
+            stretcher,
+            tempo_control,
+            out_queue: VecDeque::with_capacity(1024),
+            source_drained: false,
+            stretcher_drained: false,
+        };
+
+        (source, user_tempo_control)
+    }
+
+    /// Pull samples from [`Self::inner`], feed them to [`Self::stretcher`], and move any newly
+    /// available output into [`Self::out_queue`]. Called from [`Self::next`] whenever
+    /// [`Self::out_queue`] is exhausted.
+    fn pump(&mut self) {
+        let channels = self.channels().get();
+
+        self.stretcher
+            .set_time_ratio(1.0 / self.tempo_control.tempo());
+
+        if !self.source_drained {
+            let samples_required = self.stretcher.samples_required();
+
+            let mut samples: Vec<Vec<_>> = (0..channels)
+                .map(|_| Vec::with_capacity(samples_required.try_into().unwrap()))
+                .collect();
+
+            'outer: for _ in 0..samples_required {
+                for ch in samples.iter_mut() {
+                    match self.inner.next() {
+                        Some(s) => ch.push(s),
+                        None => {
+                            self.source_drained = true;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            let samples_refs = samples.iter().map(|v| v.as_slice()).collect::<Vec<_>>();
+            self.stretcher.process(&samples_refs, self.source_drained);
+        }
+
+        match self.stretcher.available() {
+            Some(0) => {} // busy processing
+            Some(n) if n > 0 => {
+                let mut samples = (0..channels)
+                    .map(|_| vec![0.0; n as usize])
+                    .collect::<Vec<Vec<_>>>();
+                let mut samples_refs = samples
+                    .iter_mut()
+                    .map(|v| v.as_mut_slice())
+                    .collect::<Vec<_>>();
+                let n = self.stretcher.retrieve(&mut samples_refs);
+                for i in 0..n as usize {
+                    for ch in 0..channels as usize {
+                        self.out_queue.push_back(samples[ch][i]);
+                    }
+                }
+            }
+            _ => self.stretcher_drained = true,
+        }
+    }
+}
+
+impl<S: Source> Iterator for TempoControlled<S> {
+    type Item = Sample;
+
+    fn next(&mut self) -> Option<Sample> {
+        loop {
+            if let Some(s) = self.out_queue.pop_front() {
+                return Some(s);
+            }
+            if self.stretcher_drained {
+                return None;
+            }
+            self.pump();
+        }
+    }
+}
+
+impl<S: Source> Source for TempoControlled<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        // channel count / sample rate are fixed for the lifetime of this source
+        None
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.stretcher_drained && self.out_queue.is_empty()
+    }
+
+    fn channels(&self) -> ChannelCount {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner
+            .total_duration()
+            .map(|d| self.tempo_control.duration_at_tempo(d))
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
+        self.inner
+            .try_seek(self.tempo_control.duration_from_tempo(pos))?;
+
+        // seeking is a discontinuity - reset stretcher state
+        self.stretcher.reset();
+        self.out_queue.clear();
+        self.source_drained = false;
+        self.stretcher_drained = false;
+
+        Ok(())
+    }
+}
+
+/// [`Source`] that plays zeroed samples after the inner source ends such that it never gets removed
+/// from the queue of a [`rodio::Player`].
 pub struct NeverStop<S, F>
 where
     S: Source,
@@ -92,7 +294,7 @@ where
     }
 
     fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
-        let duration = self.inner.total_duration();
+        let duration = self.total_duration();
         let clamped = duration.map_or(pos, |d| pos.min(d));
 
         self.inner.try_seek(clamped)?;
@@ -111,11 +313,11 @@ pub fn convert_to_wav(
     ffmpeg: &Path,
     src: &Path,
     out_dir: &Path,
-    start: Option<f32>,
-    end: Option<f32>,
+    start: Option<f64>,
+    end: Option<f64>,
 ) -> Result<PathBuf> {
     ensure!(src.is_file(), "Invalid path to source audio");
-    let stem = src.file_stem().unwrap();
+    let stem = src.file_stem().unwrap_or_else(|| OsStr::new(""));
     let wav = out_dir.join(stem).with_extension("wav");
     if src == wav && start.is_none() && end.is_none() {
         return Ok(src.to_path_buf());
@@ -130,44 +332,7 @@ pub fn convert_to_wav(
         ffmpeg_cmd.args(["-to", &end.to_string()]);
     }
     ffmpeg_cmd.arg("-i").arg(&src).arg(&wav);
-    ffmpeg_cmd.status()?;
+    let status = ffmpeg_cmd.status()?;
+    ensure!(status.success(), "ffmpeg exited with status {status}");
     Ok(wav)
-}
-
-/// Produce a rodio `Source` with tempo multiplier `tempo` from the WAV file `wav`.
-pub fn get_audio_with_tempo(
-    wav: &Path,
-    tempo: f64,
-    work_dir: &Path,
-) -> Result<impl Source + use<>> {
-    let mut wav_out = wav.to_path_buf();
-
-    if tempo != 1.0 {
-        wav_out = work_dir.join("stretched.wav");
-        let output = Command::new("rubberband")
-            .args(["-q", "-2", "--tempo"])
-            .arg(tempo.to_string())
-            .arg(&wav)
-            .arg(&wav_out)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .context("Failed to spawn rubberband. Is it installed?")?;
-
-        ensure!(
-            output.status.success(),
-            "rubberband exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-
-    let file = File::open(wav_out)?;
-    let len = file.metadata()?.len();
-    let decoder = Decoder::builder()
-        .with_data(file)
-        .with_byte_len(len)
-        .build()?;
-
-    Ok(decoder)
 }

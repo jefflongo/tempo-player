@@ -75,14 +75,14 @@ fn draw(f: &mut Frame, player: &Player, metadata: &TrackMetadata) {
     .alignment(Alignment::Center);
     f.render_widget(title, rows[0]);
 
-    let pos = player.get_pos();
+    let pos = metadata.tempo_control.duration_from_tempo(player.get_pos());
     let elapsed = format_time(pos.as_secs());
-    let remaining = format_time(metadata.length.as_secs());
+    let total = format_time(metadata.length.as_secs());
 
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(Color::Cyan))
         .ratio((pos.as_secs_f64() / metadata.length.as_secs_f64()).min(1.0))
-        .label(format!("{elapsed} / {remaining}"));
+        .label(format!("{elapsed} / {total}"));
     f.render_widget(gauge, rows[1]);
 
     let status = if !player.is_paused() {
@@ -104,7 +104,8 @@ enum InputResult {
 
 fn handle_input(event: Event, player: &Player, metadata: &TrackMetadata) -> InputResult {
     const SEEK_INC: Duration = Duration::from_secs(5);
-    const VOLUME_INC: f32 = 0.1;
+    const VOLUME_INC: f64 = 0.1;
+    const TEMPO_INC: f64 = 0.05;
 
     let key = match event {
         Event::Key(key) if key.kind.is_press() => key,
@@ -115,7 +116,7 @@ fn handle_input(event: Event, player: &Player, metadata: &TrackMetadata) -> Inpu
         KeyCode::Char(' ') => {
             if player.is_paused() {
                 // restart if at the end of the track
-                if player.get_pos() >= metadata.length {
+                if player.get_pos() >= metadata.length_with_tempo() {
                     let _ = player.try_seek(Duration::ZERO);
                 }
                 player.play()
@@ -123,22 +124,40 @@ fn handle_input(event: Event, player: &Player, metadata: &TrackMetadata) -> Inpu
                 player.pause()
             }
         }
-        KeyCode::Backspace => {
+        KeyCode::Backspace | KeyCode::Home => {
             let _ = player.try_seek(Duration::ZERO);
         }
-        KeyCode::Left => {
-            let _ = player.try_seek(player.get_pos().saturating_sub(SEEK_INC));
+        KeyCode::End => {
+            let _ = player.try_seek(metadata.length_with_tempo());
         }
-        KeyCode::Right => {
-            let pos = (player.get_pos() + SEEK_INC).min(metadata.length);
+        KeyCode::Left => {
+            let pos = player.get_pos().saturating_sub(SEEK_INC);
             let _ = player.try_seek(pos);
         }
-        KeyCode::Up if player.volume() + VOLUME_INC <= 1.0 => {
-            player.set_volume(player.volume() + VOLUME_INC);
+        KeyCode::Right => {
+            let pos = (player.get_pos() + SEEK_INC).min(metadata.length_with_tempo());
+            let _ = player.try_seek(pos);
         }
-        KeyCode::Down if player.volume() > VOLUME_INC => {
-            player.set_volume(player.volume() - VOLUME_INC);
+        KeyCode::Up if metadata.tempo_control.tempo() < 2.0 => {
+            let old_tempo = metadata.tempo_control.tempo();
+            let new_tempo = old_tempo + TEMPO_INC;
+            metadata.tempo_control.set_tempo(new_tempo);
+            // increasing tempo, playback moves backward
+            let _ = player.try_seek(player.get_pos().mul_f64(old_tempo / new_tempo));
         }
+        KeyCode::Down if metadata.tempo_control.tempo() > 0.15 => {
+            let old_tempo = metadata.tempo_control.tempo();
+            let new_tempo = old_tempo - TEMPO_INC;
+            metadata.tempo_control.set_tempo(new_tempo);
+            // decreasing tempo, playback moves forward
+            let _ = player.try_seek(player.get_pos().mul_f64(old_tempo / new_tempo));
+        }
+        // KeyCode::Up if player.volume() + VOLUME_INC <= 1.0 => {
+        //     player.set_volume(player.volume() + VOLUME_INC);
+        // }
+        // KeyCode::Down if player.volume() > VOLUME_INC => {
+        //     player.set_volume(player.volume() - VOLUME_INC);
+        // }
         KeyCode::Char('q') | KeyCode::Esc => return InputResult::Quit,
         _ => return InputResult::Unhandled,
     }
@@ -168,7 +187,7 @@ async fn cli_player_main(
                 }
             },
             _ = interval.tick() => {
-                let pos = player.get_pos().as_secs();
+                let pos = metadata.tempo_control.duration_from_tempo(player.get_pos()).as_secs();
                 if Some(pos) != last_pos {
                     last_pos = Some(pos);
                     true
