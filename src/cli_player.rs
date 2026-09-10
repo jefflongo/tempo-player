@@ -106,13 +106,16 @@ fn draw(f: &mut Frame, player: &Player, metadata: &TrackMetadata, selected: &UiS
     f.render_widget(title, rows[0]);
 
     // draw the seekbar in the second row
-    let pos = metadata.tempo_control.duration_from_tempo(player.get_pos());
+    let pos = metadata
+        .tempo_control
+        .duration_from_tempo(player.get_pos())
+        .min(metadata.length);
     let elapsed = format_time(pos.as_secs());
     let total = format_time(metadata.length.as_secs());
 
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(Color::Cyan))
-        .ratio((pos.as_secs_f64() / metadata.length.as_secs_f64()).min(1.0))
+        .ratio(pos.as_secs_f64() / metadata.length.as_secs_f64())
         .label(format!("{elapsed} / {total}"));
     f.render_widget(gauge, rows[1]);
 
