@@ -13,6 +13,7 @@ use rodio::{Sample, Source};
 use rubberband::Stretcher;
 use tokio::sync::Notify;
 
+/// Simple structure which groups metadata unavailable from the [`rodio::Player`] API.
 pub struct TrackMetadata {
     pub length: Duration,
     pub title: String,
@@ -22,6 +23,7 @@ pub struct TrackMetadata {
 }
 
 impl TrackMetadata {
+    /// Get the track's length at the current tempo.
     #[inline]
     pub fn length_with_tempo(&self) -> Duration {
         self.tempo_control.duration_at_tempo(self.length)
@@ -76,9 +78,16 @@ pub struct TempoControlled<S: Source> {
     inner: S,
     stretcher: Stretcher,
     tempo_control: Arc<TempoControl>,
+
+    in_buffers: Vec<Vec<Sample>>,
+    out_buffers: Vec<Vec<Sample>>,
     out_queue: VecDeque<Sample>,
+
     source_drained: bool,
     stretcher_drained: bool,
+
+    pad_remaining: usize,
+    discard_remaining: usize,
 }
 
 impl<S: Source> TempoControlled<S> {
@@ -99,13 +108,29 @@ impl<S: Source> TempoControlled<S> {
             1.0,
         );
 
+        let start_pad = stretcher.preferred_start_pad().try_into().unwrap();
+        let start_delay = stretcher.start_delay().try_into().unwrap();
+        let num_buffers = stretcher.channel_count().try_into().unwrap();
+        let buffer_size = stretcher.samples_required().try_into().unwrap();
+
         let source = Self {
             inner,
             stretcher,
             tempo_control,
-            out_queue: VecDeque::with_capacity(1024),
+
+            in_buffers: (0..num_buffers)
+                .map(|_| Vec::with_capacity(buffer_size))
+                .collect(),
+            out_buffers: (0..num_buffers)
+                .map(|_| Vec::with_capacity(buffer_size))
+                .collect(),
+            out_queue: VecDeque::with_capacity(num_buffers * buffer_size),
+
             source_drained: false,
             stretcher_drained: false,
+
+            pad_remaining: start_pad,
+            discard_remaining: start_delay,
         };
 
         (source, user_tempo_control)
@@ -115,20 +140,23 @@ impl<S: Source> TempoControlled<S> {
     /// available output into [`Self::out_queue`]. Called from [`Self::next`] whenever
     /// [`Self::out_queue`] is exhausted.
     fn pump(&mut self) {
-        let channels = self.channels().get();
-
         self.stretcher
             .set_time_ratio(1.0 / self.tempo_control.tempo());
 
         if !self.source_drained {
-            let samples_required = self.stretcher.samples_required();
+            let samples_required = self.stretcher.samples_required().try_into().unwrap();
 
-            let mut samples: Vec<Vec<_>> = (0..channels)
-                .map(|_| Vec::with_capacity(samples_required.try_into().unwrap()))
-                .collect();
+            // reset input buffers
+            let pad = self.pad_remaining.min(samples_required);
+            self.pad_remaining -= pad;
+            for ch in self.in_buffers.iter_mut() {
+                ch.clear();
+                ch.resize(pad, 0.0);
+            }
 
-            'outer: for _ in 0..samples_required {
-                for ch in samples.iter_mut() {
+            // load input buffers (after any pad samples), deinterleaving samples from inner
+            'outer: for _ in pad..samples_required {
+                for ch in self.in_buffers.iter_mut() {
                     match self.inner.next() {
                         Some(s) => ch.push(s),
                         None => {
@@ -139,27 +167,50 @@ impl<S: Source> TempoControlled<S> {
                 }
             }
 
-            let samples_refs = samples.iter().map(|v| v.as_slice()).collect::<Vec<_>>();
+            // submit input buffers for processing
+            let samples_refs = self
+                .in_buffers
+                .iter()
+                .map(|v| v.as_slice())
+                .collect::<Vec<_>>();
             self.stretcher.process(&samples_refs, self.source_drained);
         }
 
-        match self.stretcher.available() {
-            Some(0) => {} // busy processing
+        match self.stretcher.available().map(|n| n.try_into().unwrap()) {
+            // busy processing
+            Some(0) => {}
+
+            // output samples are ready
             Some(n) if n > 0 => {
-                let mut samples = (0..channels)
-                    .map(|_| vec![0.0; n as usize])
-                    .collect::<Vec<Vec<_>>>();
-                let mut samples_refs = samples
+                // reset output buffers
+                for ch in self.out_buffers.iter_mut() {
+                    ch.clear();
+                    ch.resize(n, 0.0);
+                }
+
+                // retrieve output samples
+                let mut samples_refs = self
+                    .out_buffers
                     .iter_mut()
                     .map(|v| v.as_mut_slice())
                     .collect::<Vec<_>>();
-                let n = self.stretcher.retrieve(&mut samples_refs);
-                for i in 0..n as usize {
-                    for ch in 0..channels as usize {
-                        self.out_queue.push_back(samples[ch][i]);
+                let n = self
+                    .stretcher
+                    .retrieve(&mut samples_refs)
+                    .try_into()
+                    .unwrap();
+
+                // load output queue (after any discard samples)
+                let discard = self.discard_remaining.min(n);
+                self.discard_remaining -= discard;
+                for i in discard..n {
+                    for ch in self.out_buffers.iter() {
+                        self.out_queue.push_back(ch[i]);
                     }
                 }
             }
+
+            // stretcher is finished
             _ => self.stretcher_drained = true,
         }
     }
@@ -214,6 +265,8 @@ impl<S: Source> Source for TempoControlled<S> {
         self.out_queue.clear();
         self.source_drained = false;
         self.stretcher_drained = false;
+        self.pad_remaining = self.stretcher.preferred_start_pad().try_into().unwrap();
+        self.discard_remaining = self.stretcher.start_delay().try_into().unwrap();
 
         Ok(())
     }
