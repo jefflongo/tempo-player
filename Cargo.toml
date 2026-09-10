@@ -2,6 +2,11 @@
 name = "tempo-player"
 version = "0.1.0"
 edition = "2024"
+description = "A simple command-line audio player designed to help with instrument practice"
+authors = ["Jeff Longo <jeff.a.longo@gmail.com>"]
+license = "GPL-2.0-or-later"
+readme = "README.md"
+repository = "https://github.com/jefflongo/tempo-player"
 
 [dependencies]
 anyhow = "1.0.104"
