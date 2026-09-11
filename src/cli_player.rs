@@ -141,7 +141,7 @@ fn render_settings(
     let pitch = format!("Pitch: {:<+3}", pitch);
     let volume = format!("Volume: {:>3}%", volume);
 
-    let side_width = tempo.len().max(volume.len()).try_into().unwrap();
+    let side_width = (tempo.len().max(volume.len()) + 1).try_into().unwrap();
     let settings_rect = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -196,7 +196,7 @@ fn draw(f: &mut Frame, player: &Player, metadata: &TrackMetadata, selected: UiSe
     // draw the program title over the top of the border
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Tempo Player ")
+        .title(" Elastic Player ")
         .title_alignment(Alignment::Center);
     let inner = block.inner(box_area);
     f.render_widget(block, box_area);

@@ -1,4 +1,4 @@
-# Tempo Player
+# Elastic Player
 
 A simple command-line audio player designed to help with instrument practice. It allows playback from audio files or YouTube. Additionally tempo adjustment, pitch adjustment, start/end cropping, and looping is supported.
 
@@ -12,5 +12,5 @@ cargo install --path .
 ## Usage
 
 ```bash
-tempo-player <path, query, or URL> <options>
+elastic-player <path, query, or URL> <options>
 ```
