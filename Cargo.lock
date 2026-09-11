@@ -3078,9 +3078,9 @@ checksum = "fae8ee26b0371a29a77d2b2d6b3ae13aa81def6f9bf1b1b92a32d279a5e709b7"
 
 [[package]]
 name = "rubberband"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3e2276f6a20af128ebd852f45357cb7eb5690731dfe19c9b3724052c8bb32b0"
+checksum = "293649a2ccf441efcc1c949869ce3af3bcd19eb8f1cb597d71b63fe0611b54d9"
 dependencies = [
  "bitflags 2.13.2",
  "rubberband-sys",
@@ -3088,9 +3088,9 @@ dependencies = [
 
 [[package]]
 name = "rubberband-sys"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b10755add40d4476a8092e20b328ec97d46ef110995441b62dab4dbba5179464"
+checksum = "0bdb9ac65673bd526a065cdba0c4847536b2b430da29b101a5be04275cffd8fa"
 dependencies = [
  "bindgen",
  "cc",
@@ -3769,7 +3769,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

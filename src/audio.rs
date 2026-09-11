@@ -54,9 +54,9 @@ impl TryFrom<f64> for PitchTranspose {
     }
 }
 
-impl Into<f64> for PitchTranspose {
-    fn into(self) -> f64 {
-        (f64::from(self.get()) / 12.0).exp2()
+impl From<PitchTranspose> for f64 {
+    fn from(semitones: PitchTranspose) -> Self {
+        (f64::from(semitones.get()) / 12.0).exp2()
     }
 }
 
@@ -326,7 +326,7 @@ impl<S: Source> Source for Elastic<S> {
 pub struct NeverStop<S, F>
 where
     S: Source,
-    F: Fn() -> (),
+    F: Fn(),
 {
     inner: S,
     on_end: F,
@@ -336,7 +336,7 @@ where
 impl<S, F> NeverStop<S, F>
 where
     S: Source,
-    F: Fn() -> (),
+    F: Fn(),
 {
     pub fn new(inner: S, on_end: F) -> Self {
         Self {
@@ -350,7 +350,7 @@ where
 impl<S, F> Iterator for NeverStop<S, F>
 where
     S: Source,
-    F: Fn() -> (),
+    F: Fn(),
 {
     type Item = Sample;
 
@@ -369,7 +369,7 @@ where
 impl<S, F> Source for NeverStop<S, F>
 where
     S: Source,
-    F: Fn() -> (),
+    F: Fn(),
 {
     fn current_span_len(&self) -> Option<usize> {
         if self.ended {
@@ -433,7 +433,7 @@ pub fn convert_to_wav(
     if let Some(end) = end {
         ffmpeg_cmd.args(["-to", &end.to_string()]);
     }
-    ffmpeg_cmd.arg("-i").arg(&src).arg(&wav);
+    ffmpeg_cmd.arg("-i").arg(src).arg(&wav);
     let status = ffmpeg_cmd.status()?;
     ensure!(status.success(), "ffmpeg exited with status {status}");
     Ok(wav)

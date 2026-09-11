@@ -196,7 +196,7 @@ async fn main() -> Result<()> {
 
     let mut sink = DeviceSinkBuilder::open_default_sink()?;
     sink.log_on_drop(false);
-    let player = Player::connect_new(&sink.mixer());
+    let player = Player::connect_new(sink.mixer());
 
     player.append(audio);
     cli_player(player, metadata).await
