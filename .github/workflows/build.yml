@@ -1,0 +1,61 @@
+name: Build
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            suffix: linux-x86_64
+            ext: ''
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            suffix: windows-x86_64
+            ext: '.exe'
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            suffix: macos-x86_64
+            ext: ''
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            suffix: macos-arm64
+            ext: ''
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt update && sudo apt install -y libasound2-dev
+
+      - name: Get binary name from Cargo.toml
+        id: bin
+        shell: bash
+        run: echo "name=$(cargo metadata --no-deps --format-version=1 | jq -r '.packages[0].name')" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/${{ steps.bin.outputs.name }}${{ matrix.ext }} \
+             ${{ steps.bin.outputs.name }}-${{ matrix.suffix }}${{ matrix.ext }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.bin.outputs.name }}-${{ matrix.suffix }}
+          path: ${{ steps.bin.outputs.name }}-${{ matrix.suffix }}${{ matrix.ext }}
