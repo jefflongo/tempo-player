@@ -78,7 +78,119 @@ fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
     format!("{truncated}…")
 }
 
-fn draw(f: &mut Frame, player: &Player, metadata: &TrackMetadata, selected: &UiSelection) {
+fn render_title(f: &mut Frame, r: Rect, title: &str, playing: bool) {
+    const STATUS_WIDTH: u16 = "playing".len() as u16;
+    let status = if playing { "playing" } else { "paused" };
+
+    let title_max_width = r.width.saturating_sub(STATUS_WIDTH + 1);
+    let title = truncate_with_ellipsis(title, title_max_width.into());
+    let title_len: u16 = title.chars().count().try_into().unwrap();
+
+    let title_start = (r.width.saturating_sub(title_len) / 2).max(STATUS_WIDTH + 1);
+    let title_rect = Rect {
+        x: r.x + title_start,
+        y: r.y,
+        width: r.width.saturating_sub(title_start),
+        height: r.height,
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            title,
+            Style::default().add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Left),
+        title_rect,
+    );
+
+    let status_rect = Rect {
+        x: r.x,
+        y: r.y,
+        width: STATUS_WIDTH,
+        height: r.height,
+    };
+
+    f.render_widget(
+        Paragraph::new(status)
+            .fg(Color::DarkGray)
+            .alignment(Alignment::Left),
+        status_rect,
+    );
+}
+
+fn render_seekbar(f: &mut Frame, r: Rect, pos: Duration, track_length: Duration) {
+    let elapsed = format_time(pos.as_secs());
+    let total = format_time(track_length.as_secs());
+
+    let gauge = Gauge::default()
+        .gauge_style(Style::default().fg(Color::Cyan))
+        .ratio(pos.as_secs_f64() / track_length.as_secs_f64())
+        .label(format!("{elapsed} / {total}"));
+    f.render_widget(gauge, r);
+}
+
+fn render_settings(
+    f: &mut Frame,
+    r: Rect,
+    tempo: f64,
+    pitch: PitchTranspose,
+    volume: u8,
+    selected: UiSelection,
+) {
+    let tempo = format!("Tempo: {:.2}x", tempo);
+    let pitch = format!("Pitch: {:<+3}", pitch);
+    let volume = format!("Volume: {:>3}%", volume);
+
+    let side_width = tempo.len().max(volume.len()).try_into().unwrap();
+    let settings_rect = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(side_width),
+            Constraint::Fill(1),
+            Constraint::Length(side_width),
+        ])
+        .split(r);
+
+    let unselected_style = Style::default().fg(Color::DarkGray);
+    let selected_style = Style::default().fg(Color::Cyan);
+
+    let tempo_style = if selected == UiSelection::Tempo {
+        selected_style
+    } else {
+        unselected_style
+    };
+    let pitch_style = if selected == UiSelection::Pitch {
+        selected_style
+    } else {
+        unselected_style
+    };
+    let volume_style = if selected == UiSelection::Volume {
+        selected_style
+    } else {
+        unselected_style
+    };
+
+    f.render_widget(
+        Paragraph::new(tempo)
+            .style(tempo_style)
+            .alignment(Alignment::Left),
+        settings_rect[0],
+    );
+    f.render_widget(
+        Paragraph::new(pitch)
+            .style(pitch_style)
+            .alignment(Alignment::Center),
+        settings_rect[1],
+    );
+    f.render_widget(
+        Paragraph::new(volume)
+            .style(volume_style)
+            .alignment(Alignment::Right),
+        settings_rect[2],
+    );
+}
+
+fn draw(f: &mut Frame, player: &Player, metadata: &TrackMetadata, selected: UiSelection) {
     let box_area = centered_rect(60, 5, f.area());
 
     // draw the program title over the top of the border
@@ -99,115 +211,25 @@ fn draw(f: &mut Frame, player: &Player, metadata: &TrackMetadata, selected: &UiS
         ])
         .split(inner);
 
-    const STATUS_WIDTH: u16 = "playing".len() as u16;
+    render_title(f, rows[0], &metadata.title, !player.is_paused());
 
-    // draw the title in the first row
-    let title_max_width = rows[0].width.saturating_sub(STATUS_WIDTH + 1);
-    let title = truncate_with_ellipsis(&metadata.title, title_max_width.into());
-    let title_len: u16 = title.chars().count().try_into().unwrap();
-
-    let title_start = (rows[0].width.saturating_sub(title_len) / 2).max(STATUS_WIDTH + 1);
-    let title_rect = Rect {
-        x: rows[0].x + title_start,
-        y: rows[0].y,
-        width: rows[0].width.saturating_sub(title_start),
-        height: rows[0].height,
-    };
-
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            title,
-            Style::default().add_modifier(Modifier::BOLD),
-        )))
-        .alignment(Alignment::Left),
-        title_rect,
+    render_seekbar(
+        f,
+        rows[1],
+        metadata
+            .controller
+            .duration_from_tempo(player.get_pos())
+            .min(metadata.length),
+        metadata.length,
     );
 
-    // draw playing / paused status in the upper left corner
-    let status = if player.is_paused() {
-        "paused"
-    } else {
-        "playing"
-    };
-
-    let status_rect = Rect {
-        x: rows[0].x,
-        y: rows[0].y,
-        width: STATUS_WIDTH,
-        height: rows[0].height,
-    };
-    f.render_widget(
-        Paragraph::new(status)
-            .fg(Color::DarkGray)
-            .alignment(Alignment::Left),
-        status_rect,
-    );
-
-    // draw the seekbar in the second row
-    let pos = metadata
-        .controller
-        .duration_from_tempo(player.get_pos())
-        .min(metadata.length);
-    let elapsed = format_time(pos.as_secs());
-    let total = format_time(metadata.length.as_secs());
-
-    let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan))
-        .ratio(pos.as_secs_f64() / metadata.length.as_secs_f64())
-        .label(format!("{elapsed} / {total}"));
-    f.render_widget(gauge, rows[1]);
-
-    // draw settings in the third row
-    let tempo = format!("Tempo: {:.2}x", metadata.controller.tempo());
-    let pitch = format!("Pitch: {:<+3}", metadata.controller.pitch());
-    let volume = format!("Volume: {:>3}%", (player.volume() * 100.0).round() as u8);
-
-    let side_width = tempo.len().max(volume.len()).try_into().unwrap();
-    let footer = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(side_width),
-            Constraint::Fill(1),
-            Constraint::Length(side_width),
-        ])
-        .split(rows[2]);
-
-    let unselected_style = Style::default().fg(Color::DarkGray);
-    let selected_style = Style::default().fg(Color::Cyan);
-
-    let tempo_style = if *selected == UiSelection::Tempo {
-        selected_style
-    } else {
-        unselected_style
-    };
-    let pitch_style = if *selected == UiSelection::Pitch {
-        selected_style
-    } else {
-        unselected_style
-    };
-    let volume_style = if *selected == UiSelection::Volume {
-        selected_style
-    } else {
-        unselected_style
-    };
-
-    f.render_widget(
-        Paragraph::new(tempo)
-            .style(tempo_style)
-            .alignment(Alignment::Left),
-        footer[0],
-    );
-    f.render_widget(
-        Paragraph::new(pitch)
-            .style(pitch_style)
-            .alignment(Alignment::Center),
-        footer[1],
-    );
-    f.render_widget(
-        Paragraph::new(volume)
-            .style(volume_style)
-            .alignment(Alignment::Right),
-        footer[2],
+    render_settings(
+        f,
+        rows[2],
+        metadata.controller.tempo(),
+        metadata.controller.pitch(),
+        (player.volume() * 100.0).round() as u8,
+        selected,
     );
 }
 
@@ -399,7 +421,7 @@ async fn cli_player_main(
         };
 
         if redraw {
-            terminal.draw(|f| draw(f, &player, &metadata, &selected))?;
+            terminal.draw(|f| draw(f, &player, &metadata, selected))?;
         }
     }
     Ok(())
