@@ -152,7 +152,7 @@ impl<S: Source> Elastic<S> {
             inner.sample_rate().get(),
             inner.channels().get().into(),
             Options::PROCESS_REALTIME | Options::ENGINE_FINER,
-            1.0 / controller.tempo(),
+            1.0 / initial_tempo,
             initial_pitch.into(),
         );
 
