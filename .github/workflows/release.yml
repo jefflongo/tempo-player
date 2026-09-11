@@ -13,6 +13,8 @@ jobs:
     name: Publish Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v7
         with:
