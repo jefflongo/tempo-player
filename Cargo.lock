@@ -305,6 +305,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "bounded-integer"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67c210ac9fa33f699b394d9a66471402ff987305afd02ab1e3ba7b11bf71a237"
+dependencies = [
+ "bounded-integer-macro",
+]
+
+[[package]]
+name = "bounded-integer-macro"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9669c4b1b3c0df3d44300abe3d72d8272f74ef7fb682b3c4549382ef65fe37a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3739,6 +3758,7 @@ name = "tempo-player"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bounded-integer",
  "clap",
  "crossterm",
  "dirs",
@@ -4002,9 +4022,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.13+spec-1.1.0"
+version = "0.25.15+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
+checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
  "indexmap 2.14.2",
  "toml_datetime",

@@ -14,9 +14,10 @@ use which::which;
 use yt_dlp::client::LibraryInstaller;
 use yt_dlp::client::deps::Libraries;
 use yt_dlp::model::Video;
+use yt_dlp::utils::validation::sanitize_filename;
 use yt_dlp::{Downloader, VideoSelection};
 
-use crate::audio::{NeverStop, TempoControlled, TrackMetadata, convert_to_wav};
+use crate::audio::{Elastic, NeverStop, PitchTranspose, TrackMetadata, convert_to_wav};
 use crate::cli_player::cli_player;
 
 /// Play music at a desired tempo locally or from YouTube.
@@ -29,6 +30,10 @@ struct Cli {
     /// Initial tempo multiplier
     #[arg(short, long, default_value_t = 1.0)]
     tempo: f64,
+
+    /// Initial pitch transposition in semitones
+    #[arg(short, long, default_value_t = PitchTranspose::default())]
+    pitch: PitchTranspose,
 
     /// Start time of track
     #[arg(short, long, value_parser = parse_time)]
@@ -128,6 +133,7 @@ async fn download_audio(
             .codec_info
             .audio_ext
     );
+    let file_name = sanitize_filename(&file_name);
     let file_path = downloader.download_audio_stream(&video, &file_name).await?;
     Ok(file_path)
 }
@@ -171,7 +177,7 @@ async fn main() -> Result<()> {
         .total_duration()
         .context("Couldn't retrieve track length")?;
 
-    let (audio, tempo_control) = TempoControlled::new(audio, cli.tempo);
+    let (audio, controller) = Elastic::new(audio, cli.tempo, cli.pitch);
 
     let track_ended = Arc::new(Notify::new());
     let track_ended_listener = track_ended.clone();
@@ -184,7 +190,7 @@ async fn main() -> Result<()> {
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default(),
         track_ended: track_ended_listener,
-        tempo_control,
+        controller,
         loop_track: cli.loop_track,
     };
 

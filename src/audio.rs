@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::ffi::OsStr;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, ensure};
+use bounded_integer::bounded_integer;
 use rodio::source::SeekError;
 use rodio::{ChannelCount, SampleRate};
 use rodio::{Sample, Source};
@@ -18,7 +20,7 @@ pub struct TrackMetadata {
     pub length: Duration,
     pub title: String,
     pub track_ended: Arc<Notify>,
-    pub tempo_control: Arc<TempoControl>,
+    pub controller: Arc<ElasticController>,
     pub loop_track: bool,
 }
 
@@ -26,31 +28,72 @@ impl TrackMetadata {
     /// Get the track's length at the current tempo.
     #[inline]
     pub fn length_with_tempo(&self) -> Duration {
-        self.tempo_control.duration_at_tempo(self.length)
+        self.controller.duration_at_tempo(self.length)
     }
 }
 
-/// A handle for controlling the tempo of a [`TempoControlled`].
-pub struct TempoControl {
-    tempo_bits: AtomicU64,
+bounded_integer! {
+    /// Transposition of pitch in positive or negative semitones.
+    pub struct PitchTranspose(-12, 12);
 }
 
-impl TempoControl {
-    /// Set the tempo of the [`TempoControlled`]. A tempo of 2.0 means the source will play at
-    /// double the original speed. A tempo of 0.5 means the source will play at half the original
-    /// speed.
+impl Deref for PitchTranspose {
+    type Target = i8;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
+}
+
+impl TryFrom<f64> for PitchTranspose {
+    type Error = bounded_integer::TryFromError;
+
+    fn try_from(pitch: f64) -> Result<PitchTranspose, Self::Error> {
+        let semitones = (12.0 * pitch.log2()).round() as i8;
+        semitones.try_into()
+    }
+}
+
+impl Into<f64> for PitchTranspose {
+    fn into(self) -> f64 {
+        (f64::from(self.get()) / 12.0).exp2()
+    }
+}
+
+/// A handle for controlling the tempo of a [`Elastic`].
+pub struct ElasticController {
+    tempo_bits: AtomicU64,
+    pitch_bits: AtomicU64,
+}
+
+impl ElasticController {
+    /// Set the tempo of the [`Elastic`]. A tempo of 2.0 means the source will play at double the
+    /// original speed. A tempo of 0.5 means the source will play at half the original speed.
     #[inline]
     pub fn set_tempo(&self, tempo: f64) {
-        debug_assert!(tempo > 0.0, "tempo must be positive");
         self.tempo_bits.store(tempo.to_bits(), Ordering::Relaxed);
     }
 
-    /// Get the current tempo of the [`TempoControlled`]. A tempo of 2.0 means the source will play
-    /// at double the original speed. A tempo of 0.5 means the source will play at half the original
+    /// Get the current tempo of the [`Elastic`]. A tempo of 2.0 means the source will play at
+    /// double the original speed. A tempo of 0.5 means the source will play at half the original
     /// speed.
     #[inline]
     pub fn tempo(&self) -> f64 {
         f64::from_bits(self.tempo_bits.load(Ordering::Relaxed))
+    }
+
+    /// Set the pitch of the [`Elastic`] in positive or negative semitones.
+    #[inline]
+    pub fn set_pitch(&self, transpose: PitchTranspose) {
+        self.pitch_bits
+            .store(Into::<f64>::into(transpose).to_bits(), Ordering::Relaxed);
+    }
+
+    #[inline]
+    pub fn pitch(&self) -> PitchTranspose {
+        f64::from_bits(self.pitch_bits.load(Ordering::Relaxed))
+            .try_into()
+            .expect("Pitch did not produce valid PitchTranspose")
     }
 
     /// Given a [`Duration`] at tempo, compute the position at real-time.
@@ -65,19 +108,21 @@ impl TempoControl {
         pos.div_f64(self.tempo())
     }
 
-    /// Constructs a new [`TempoControl`] with initial tempo `tempo`.
-    fn new(tempo: f64) -> Self {
+    /// Constructs a new [`ElasticController`] with initial tempo multiplier `tempo` and pitch
+    /// transposition `pitch` in semitones.
+    fn new(tempo: f64, transpose: PitchTranspose) -> Self {
         Self {
             tempo_bits: AtomicU64::new(tempo.to_bits()),
+            pitch_bits: AtomicU64::new(Into::<f64>::into(transpose).to_bits()),
         }
     }
 }
 
 /// A [`Source`] which can have its tempo dynamically controlled.
-pub struct TempoControlled<S: Source> {
+pub struct Elastic<S: Source> {
     inner: S,
     stretcher: Stretcher,
-    tempo_control: Arc<TempoControl>,
+    controller: Arc<ElasticController>,
 
     in_buffers: Vec<Vec<Sample>>,
     out_buffers: Vec<Vec<Sample>>,
@@ -90,21 +135,24 @@ pub struct TempoControlled<S: Source> {
     discard_remaining: usize,
 }
 
-impl<S: Source> TempoControlled<S> {
-    /// Constructs a new [`TempoControlled<S>`] with underlying [`Source`] `inner` and initial tempo
-    /// `initial_tempo`. Returns both the new [`TempoControlled<S>`] and an [`Arc<TempoControl>`]
-    /// for controlling the tempo after the source is consumed by a sink.
-    pub fn new(inner: S, initial_tempo: f64) -> (Self, Arc<TempoControl>) {
+impl<S: Source> Elastic<S> {
+    /// Constructs a new [`Elastic<S>`] with underlying [`Source`] `inner` and initial tempo
+    /// `initial_tempo`. Returns both the new [`Elastic<S>`] and an [`Arc<ElasticController>`] for controlling the tempo after the source is consumed by a sink.
+    pub fn new(
+        inner: S,
+        initial_tempo: f64,
+        initial_pitch: PitchTranspose,
+    ) -> (Self, Arc<ElasticController>) {
         use rubberband::Options;
 
-        let tempo_control = Arc::new(TempoControl::new(initial_tempo));
-        let user_tempo_control = Arc::clone(&tempo_control);
+        let controller = Arc::new(ElasticController::new(initial_tempo, initial_pitch));
+        let user_controller = Arc::clone(&controller);
 
         let stretcher = Stretcher::new(
             inner.sample_rate().get(),
             inner.channels().get().into(),
             Options::PROCESS_REALTIME | Options::ENGINE_FINER,
-            1.0 / tempo_control.tempo(),
+            1.0 / controller.tempo(),
             1.0,
         );
 
@@ -116,7 +164,7 @@ impl<S: Source> TempoControlled<S> {
         let source = Self {
             inner,
             stretcher,
-            tempo_control,
+            controller,
 
             in_buffers: (0..num_buffers)
                 .map(|_| Vec::with_capacity(buffer_size))
@@ -133,15 +181,16 @@ impl<S: Source> TempoControlled<S> {
             discard_remaining: start_delay,
         };
 
-        (source, user_tempo_control)
+        (source, user_controller)
     }
 
     /// Pull samples from [`Self::inner`], feed them to [`Self::stretcher`], and move any newly
     /// available output into [`Self::out_queue`]. Called from [`Self::next`] whenever
     /// [`Self::out_queue`] is exhausted.
     fn pump(&mut self) {
+        self.stretcher.set_time_ratio(1.0 / self.controller.tempo());
         self.stretcher
-            .set_time_ratio(1.0 / self.tempo_control.tempo());
+            .set_pitch_scale(self.controller.pitch().into());
 
         if !self.source_drained {
             let samples_required = self.stretcher.samples_required().try_into().unwrap();
@@ -216,7 +265,7 @@ impl<S: Source> TempoControlled<S> {
     }
 }
 
-impl<S: Source> Iterator for TempoControlled<S> {
+impl<S: Source> Iterator for Elastic<S> {
     type Item = Sample;
 
     fn next(&mut self) -> Option<Sample> {
@@ -232,7 +281,7 @@ impl<S: Source> Iterator for TempoControlled<S> {
     }
 }
 
-impl<S: Source> Source for TempoControlled<S> {
+impl<S: Source> Source for Elastic<S> {
     fn current_span_len(&self) -> Option<usize> {
         // channel count / sample rate are fixed for the lifetime of this source
         None
@@ -253,12 +302,12 @@ impl<S: Source> Source for TempoControlled<S> {
     fn total_duration(&self) -> Option<Duration> {
         self.inner
             .total_duration()
-            .map(|d| self.tempo_control.duration_at_tempo(d))
+            .map(|d| self.controller.duration_at_tempo(d))
     }
 
     fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
         self.inner
-            .try_seek(self.tempo_control.duration_from_tempo(pos))?;
+            .try_seek(self.controller.duration_from_tempo(pos))?;
 
         // seeking is a discontinuity - reset stretcher state
         self.stretcher.reset();
