@@ -1,6 +1,6 @@
 # Elastic Player
 
-A simple command-line audio player designed to help with instrument practice. It allows playback from audio files or YouTube. Additionally tempo adjustment, pitch adjustment, start/end cropping, and looping is supported.
+A simple command-line audio player designed to help with instrument practice. It supports playback from audio files or YouTube, along with tempo adjustment, pitch adjustment, start/end cropping, and looping.
 
 ## Install
 
