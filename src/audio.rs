@@ -153,7 +153,7 @@ impl<S: Source> Elastic<S> {
             inner.channels().get().into(),
             Options::PROCESS_REALTIME | Options::ENGINE_FINER,
             1.0 / controller.tempo(),
-            1.0,
+            initial_pitch.into(),
         );
 
         let start_pad = stretcher.preferred_start_pad().try_into().unwrap();
